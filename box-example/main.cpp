@@ -15,120 +15,147 @@
 
 using namespace cv;
 using namespace std;
+VideoCapture inputCapture;
+std::ofstream outstream;
+
+Mat nextImage();
+bool runCalibration(Size& imageSize, Mat& cameraMatrix, Mat& distCoeffs,
+                    vector<vector<Point2f> > imagePoints, vector<Mat>& rvecs, vector<Mat>& tvecs,
+                    vector<float>& reprojErrs,  double& totalAvgErr);
+
+static double computeReprojectionErrors( const vector<vector<Point3f> >& objectPoints,
+                                         const vector<vector<Point2f> >& imagePoints,
+                                         const vector<Mat>& rvecs, const vector<Mat>& tvecs,
+                                         const Mat& cameraMatrix , const Mat& distCoeffs,
+                                         vector<float>& perViewErrors);
+
+bool saveCalibration(std::string name, Mat& cameraMatrix, Mat& distCoeffs);
 
 
-// double findBoxAngle(const cv::Point& center, const cv::Point& point, const cv::Point& base)
-// {
-//     /* Compute the angle between the center, a point and it's base (starting point for the angle computation)
-//      *
-//      *      %
-//      *    *   *         @ = center
-//      *   *  @  #        # = base (origin)
-//      *    *   *         % = point
-//      *      *           From # to %, there are 90 degrees
-//      */
+static double computeReprojectionErrors( const vector<vector<Point3f> >& objectPoints,
+                                         const vector<vector<Point2f> >& imagePoints,
+                                         const vector<Mat>& rvecs, const vector<Mat>& tvecs,
+                                         const Mat& cameraMatrix , const Mat& distCoeffs,
+                                         vector<float>& perViewErrors)
+{
+    vector<Point2f> imagePoints2;
+    int i, totalPoints = 0;
+    double totalErr = 0, err;
+    perViewErrors.resize(objectPoints.size());
 
-//     double angle = std::atan2(point.y - center.y, point.x - center.x) * 180 / 3.141592;
-//     angle = (angle < 0) ? (360 + angle) : angle;
-//     return (360 - angle);
-// }
+    for( i = 0; i < (int)objectPoints.size(); ++i )
+    {
+        cv::projectPoints( Mat(objectPoints[i]), rvecs[i], tvecs[i], cameraMatrix,
+                       distCoeffs, imagePoints2);
+        err = cv::norm(Mat(imagePoints[i]), Mat(imagePoints2), 4); //L2 is 4
 
-// vector<Point> findBoxCorners(Mat& grey_mat, Mat& mat){
+        int n = (int)objectPoints[i].size();
+        perViewErrors[i] = (float) std::sqrt(err*err/n);
+        totalErr        += err*err;
+        totalPoints     += n;
+    }
 
-//     Mat grad_x, grad_y, abs_grad_x, abs_grad_y, sobel_mat, canny_mat;
-//     vector<vector<Point>> contours;
-//     vector<Point> poly;
-
-//     int scale = 1;
-// 	int delta = 0;
-// 	int ddepth = CV_16S;
-
-//     //Blur img
-//     GaussianBlur(grey_mat, grey_mat, Size(5,5), 0, 0, BORDER_DEFAULT );
-
-//     //Sobel
-//     // Gradient X
-// 	Sobel( grey_mat, grad_x, ddepth, 1, 0, 3, scale, delta, BORDER_DEFAULT );
-// 	// Gradient Y
-// 	Sobel( grey_mat, grad_y, ddepth, 0, 1, 3, scale, delta, BORDER_DEFAULT );
-// 	convertScaleAbs( grad_x, abs_grad_x );
-// 	convertScaleAbs( grad_y, abs_grad_y );
-// 	addWeighted( abs_grad_x, 0.5, abs_grad_y, 0.5, 0, sobel_mat);
-
-//     //Canny
-//     int thresh = 100;
-//     Canny(sobel_mat, canny_mat, thresh, thresh*2);
-
-//     vector<Vec4i> hierarchy;
-//     findContours(canny_mat, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-
-//     // int idx = 0;
-//     // for( ; idx >= 0; idx = hierarchy[idx][0] )
-//     // {
-//     //     Scalar color( rand()&255, rand()&255, rand()&255 );
-//     //     // drawContours( mat, contours, idx, color, 8, "FILLED", hierarchy );
-//     //     drawContours(mat,contours,-1,(0,0,255),2);
-//     // }
-
-//     // imshow( "Components", mat);
-//     // waitKey(0);
-
-//     approxPolyDP(contours[0], poly, 3, true );
-
-//     for (auto k:poly ){
-//         circle(mat, k, 50, (0, 0, 255), 3);
-//     }
-//     imshow( "Components", mat);
-//     waitKey(0);
-    
-//     return poly;
-// }
+    return std::sqrt(totalErr/totalPoints);
+}
 
 
-// bool findBox(Mat& img, vector<Point2f>& pointBuf){
+bool runCalibration(Size& imageSize, Mat& cameraMatrix, Mat& distCoeffs,
+                    vector<vector<Point2f>> imagePoints, vector<Mat>& rvecs, vector<Mat>& tvecs,
+                    vector<float>& reprojErrs,  double& totalAvgErr){
 
-//     Mat dst;
+    cameraMatrix = Mat::eye(3, 3, CV_64F);
+    distCoeffs = Mat::zeros(8, 1, CV_64F);
 
-//     //turn to gray scale
-//     cvtColor(img, dst, CV_BGR2GRAY);
+    float squareWidth = 106; //106mm 400.62992126px
+    float squareHeight = 105; //105mm 396.8503937px
+    vector<vector<Point3f>> objectPoints(1);;
+    objectPoints[0].push_back(Point3f(0,0,0));
+    objectPoints[0].push_back(Point3f(squareHeight,squareWidth,0));
+    objectPoints[0].push_back(Point3f(squareHeight,0,0));
+    objectPoints[0].push_back(Point3f(0,squareWidth,0));
+    // cout << imagePoints.size() << objectPoints[0].size() << endl;;
 
-//     //dilate
-//     int dilation_size = 0;
-//     Mat element = getStructuringElement( MORPH_RECT,
-//                        Size( 2*dilation_size + 1, 2*dilation_size+1 ),
-//                        Point( dilation_size, dilation_size ) );
-//     cv::dilate(dst, dst, element);
+    objectPoints.resize(imagePoints.size(),objectPoints[0]);
 
-//     vector<Point> corners = findBoxCorners(dst, img);
-    
-//     vector<Point> result;
-//     // float angle;
-//     // for (int d=0; d<corners.size() ;d++){
-//     //     for 
+    // //Find intrinsic and extrinsic camera parameters
+    double rms = calibrateCamera(objectPoints, imagePoints, imageSize, cameraMatrix,
+                                 distCoeffs, rvecs, tvecs,  cv::CALIB_FIX_K4| cv::CALIB_FIX_K5);
 
+    cout << "Re-projection error reported by calibrateCamera: "<< rms << endl;
 
+    bool ok = checkRange(cameraMatrix) && checkRange(distCoeffs);
 
-//     // }
+    totalAvgErr = computeReprojectionErrors(objectPoints, imagePoints,
+                                            rvecs, tvecs, cameraMatrix, distCoeffs, reprojErrs);
 
-    
+    return ok;
+}
 
+bool saveCalibration(string name, Mat& cameraMatrix, Mat& distCoeffs){
 
-//     cv::Point2f pt(10, 20);
-//     pointBuf.push_back(pt);
-//     return true;
-// }
+    outstream.open(name, std::ios_base::app);
+    if (outstream){
+
+        outstream << "Camera Coefficient"<< endl;
+        for (int r=0; r < cameraMatrix.rows; r++){
+            for (int c=0; c < cameraMatrix.cols; c++){
+                double value = cameraMatrix.at<double>(r,c);
+                outstream << value << endl;
+            }
+        }
+
+        outstream << "Distortion Coefficients "<< endl;
+        for (int r=0; r < distCoeffs.rows; r++){
+            for (int c=0; c < distCoeffs.cols; c++){
+                double value = distCoeffs.at<double>(r,c);
+                outstream << value << endl;
+            }
+        }
+        return true;
+    }
+
+    return false;
+
+                    
+}
+
+Mat nextImage(){
+    Mat result;
+    if( inputCapture.isOpened() )
+    {
+        Mat view0;
+        inputCapture >> view0;
+        view0.copyTo(result);
+    }
+    return result;
+}
+
 
 int main(int argc, char* argv[])
 {
     vector<cv::String> fn;
-    string img_dir =  "/code/box-example/image/*.JPG";
+    string img_dir =  "/code/box-example/image/*";
     glob(img_dir, fn, false);
     size_t count_fn = fn.size();
     Mat cur_img;
-    Mat cameraMatrix, distCoeffs;
     vector<vector<Point2f> > imagePoints;
+    // Calibration Param
+    cv::Size imageSize;
+    Mat cameraMatrix, distCoeffs;
+    vector<Mat> rvecs, tvecs;
+    vector<float> reprojErrs;
+    double totalAvgErr;
+    int num_valid_photo = 0;
+
+    inputCapture.open(1,cv::CAP_V4L2);
+    if( !inputCapture.isOpened() )
+    {
+        cout << "Cant find camera" << endl;
+        return 0;
+    }
 
     for(size_t i=0; i<count_fn; i++){
+    // while(num_valid_photo < 20){
 
         cout << "Image: " << i << endl;
 
@@ -137,12 +164,21 @@ int main(int argc, char* argv[])
         //load in an image
         cur_img = imread(fn[i]);
 
+        // cur_img = nextImage();
+        // imshow("video stream",cur_img);
+        // waitKey(100);
+
         //find the presence of the box
         vector<Point2f> pointBuf;
         FindBox box; 
         bool found = box.getBox(cur_img, pointBuf);
 
         if (found){
+            num_valid_photo ++;
+
+            std::string name = "./image_v/" + to_string(num_valid_photo) +".jpg";
+            cv::imwrite(name, cur_img);
+
             imagePoints.push_back(pointBuf);
             blinkOutput = true;
         }
@@ -151,21 +187,51 @@ int main(int argc, char* argv[])
             bitwise_not(cur_img, cur_img);
         }
 
-        // for (auto k:pointBuf){
-        //     cout << "Point Buffer" << k << endl;
-        // }
-
 
     }
+    cout << "Number of Valid Photos: " << num_valid_photo << endl;
+    cout << "Avg_Reprojection_Error: " << totalAvgErr << endl;;
 
-    // Calibration
-    // runCalibrationAndSave(s, imageSize,  cameraMatrix, distCoeffs, imagePoints)
+    if (num_valid_photo > 0){
+        imageSize = cur_img.size();
+        runCalibration(imageSize, cameraMatrix, distCoeffs,
+                    imagePoints, rvecs, tvecs,
+                    reprojErrs, totalAvgErr);
+        saveCalibration("result", cameraMatrix, distCoeffs);
 
-    // Show Undistort Img
-    // Mat temp = view.clone();
-    // undistort(temp, view, cameraMatrix, distCoeffs); //opencv func
+        Mat view, rview, map1, map2;
+        initUndistortRectifyMap(cameraMatrix, distCoeffs, Mat(),
+            getOptimalNewCameraMatrix(cameraMatrix, distCoeffs, imageSize, 1, imageSize, 0),
+            imageSize, CV_16SC2, map1, map2);
+
+
+        vector<cv::String> fn2;
+        string img_dir2 =  "/code/box-example/image_v/*";
+        glob(img_dir2, fn2, false);
+        for(int i = 0; i < (int)fn2.size(); i++ )
+        {
+            view = imread(fn2[i], 1);
+
+            if(view.empty())
+                continue;
+            remap(view, rview, map1, map2, INTER_LINEAR);
+
+            std::string name2 = "./image_un/undistorded_" + to_string(i) +".jpg";
+            cv::imwrite(name2, rview);
+
+            imshow("Image View", rview);
+            waitKey(0);
+            // char c = (char)waitKey();
+            // if( c  == ESC_KEY || c == 'q' || c == 'Q' )
+            //     break;
+        }
+
+    } else {
+        cout << "Not enough photos" << endl;
+    }
+
+    inputCapture.release();
+    outstream.close();
+    return 0;
 }
 
-// runCalibrationAndSave
-
-// runCalibration
